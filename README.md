@@ -1,39 +1,33 @@
-# 🎙️ Headset Dictation Shield
+# Headset Dictation
 
-> **Repurpose 3.5mm wired headset buttons into a universal macOS dictation trigger with an active multi-layer media shield.**
+Use a wired 3.5mm headset button to toggle dictation on macOS without triggering media players.
 
-[![macOS](https://img.shields.io/badge/Platform-macOS%2013%2B-blue.svg)](https://apple.com/macos)
-[![Swift](https://img.shields.io/badge/Swift-6.0%2B-orange.svg)](https://swift.org)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-
-`headset-dictation` is a lightweight macOS background daemon that intercepts physical inline button presses from wired 3.5mm TRRS headsets (Apple EarPods, Bose, Sony, etc.) and translates them into dictation toggle hotkeys (such as the **Left Control** key for **Willow Voice** or **Whisper Flow**).
-
-It features a **multi-layer media shield** that prevents macOS from routing Play/Pause events to background media players (like Chrome/YouTube, Spotify, Apple Music, or VLC).
+This daemon intercepts the inline button on standard 3.5mm TRRS headsets (Apple EarPods, Bose, etc.) and converts clicks into a keyboard shortcut (Left Control) for dictation apps like Willow Voice or Whisper Flow. It also blocks macOS from routing the click as a Play/Pause command to apps like Chrome, Spotify, or Apple Music.
 
 ---
 
-## 📑 Table of Contents
-- [Hardware Architecture & Physics](#-hardware-architecture--physics)
-  - [3.5mm TRRS CTIA Pinout](#35mm-trrs-ctia-pinout)
-  - [The Push-to-Talk vs. Toggle Conundrum](#the-push-to-talk-vs-toggle-conundrum)
-- [macOS Event Pipeline & The Dual Routing Problem](#-macos-event-pipeline--the-dual-routing-problem)
-- [Multi-Layer Media Shield Architecture](#-multi-layer-media-shield-architecture)
-- [Software Architecture & Flow](#-software-architecture--flow)
-- [Quick Start](#-quick-start)
-  - [Prerequisites](#prerequisites)
-  - [Build & Run](#build--run)
-  - [Granting Accessibility Permissions](#granting-accessibility-permissions)
-- [Background Service (LaunchAgent)](#-background-service-launchagent)
-- [Troubleshooting & Chrome Media Key Isolation](#-troubleshooting--chrome-media-key-isolation)
-- [License](#-license)
+## Table of Contents
+- [Hardware Details](#hardware-details)
+  - [3.5mm TRRS (CTIA) Pinout](#35mm-trrs-ctia-pinout)
+  - [Why Hold-to-Talk Does Not Work](#why-hold-to-talk-does-not-work)
+- [macOS Event Routing](#macos-event-routing)
+- [Media Key Interception](#media-key-interception)
+- [How It Works](#how-it-works)
+- [Quick Start](#quick-start)
+  - [Requirements](#requirements)
+  - [Build and Run](#build-and-run)
+  - [Accessibility Permissions](#accessibility-permissions)
+- [Running as a Background Service](#running-as-a-background-service)
+- [Chrome Media Key Handling](#chrome-media-key-handling)
+- [License](#license)
 
 ---
 
-## ⚡ Hardware Architecture & Physics
+## Hardware Details
 
-### 3.5mm TRRS CTIA Pinout
+### 3.5mm TRRS (CTIA) Pinout
 
-Standard wired 3.5mm headsets follow the **CTIA (Cellular Telecommunications Industry Association)** mechanical standard:
+Standard 3.5mm wired headsets use the CTIA pinout:
 
 ```
         Tip (T)       Ring 1 (R1)     Ring 2 (R2)      Sleeve (S)
@@ -45,42 +39,37 @@ Standard wired 3.5mm headsets follow the **CTIA (Cellular Telecommunications Ind
          Pin 1           Pin 2            Pin 3              Pin 4
 ```
 
-### The Push-to-Talk vs. Toggle Conundrum
+### Why Hold-to-Talk Does Not Work
 
-In standard CTIA 3.5mm headsets, the inline remote button does **not** send a digital data packet. Instead, it is an analog mechanical switch:
+The inline remote button is a mechanical switch connected between the microphone line and ground:
 
 ```
                         [Inline Remote Button]
                              ┌───/ ───┐
                              │        │
-  Sleeve (Mic Line) ─────────┴────────┼──────────[Electret Mic Capsule]
+  Sleeve (Mic Line) ─────────┴────────┼──────────[Mic Capsule]
                                       │
   Ring 2 (Ground)   ──────────────────┴──────────[Ground Reference]
 ```
 
-* **When Clicked:** The button physically shorts the **Microphone line (Sleeve)** directly to **Ground (Ring 2)** (reducing voltage across the mic line to $\approx 0\text{V}$).
-* **macOS Hardware Codec (`AppleHDA`):** Detects the zero-voltage drop and registers it as an inline remote click (`NX_KEYTYPE_PLAY`).
+- When you press the button, it shorts the **Mic line (Sleeve)** directly to **Ground (Ring 2)**, pulling the line to 0V.
+- The audio hardware (`AppleHDA`) detects this voltage drop and emits a play/pause media event (`NX_KEYTYPE_PLAY`).
+- Because holding the button grounds the mic line, the microphone is muted for the entire duration of the press.
 
-```
-⚠️ THE HARDWARE CONSTRAINT:
-If you physically HOLD the inline button down to speak ("Push-to-Talk"), the microphone line 
-remains shorted to 0V/Ground, completely MUTING the audio signal reaching your computer.
-```
-
-#### ✅ Solution: Latching Toggle Mode
-The daemon implements a stateful **toggle mode** with software debouncing:
-1. **Click 1:** Starts Dictation $\rightarrow$ Software injects virtual key down (`Control Down`) $\rightarrow$ Button is released $\rightarrow$ Mic line returns to normal voltage $\rightarrow$ **You speak with full audio quality**.
-2. **Click 2:** Stops Dictation $\rightarrow$ Software injects virtual key up (`Control Up`) $\rightarrow$ Speech-to-text transcribes immediately.
+**Toggle Mode:**
+Instead of hold-to-talk, the listener uses click-to-toggle:
+1. **First click:** Sends `Control Down` to start dictation. Releasing the button un-grounds the mic so you can speak normally.
+2. **Second click:** Sends `Control Up` to stop dictation and start transcription.
 
 ---
 
-## 🔄 macOS Event Pipeline & The Dual Routing Problem
+## macOS Event Routing
 
-When an inline headset button is clicked, macOS broadcasts the event across **two completely independent pipelines**:
+When the inline button is pressed, macOS sends the event down two separate paths:
 
 ```
                   ┌─────────────────────────────────┐
-                  │ 3.5mm Headset Button Clicked    │
+                  │   3.5mm Headset Button Click    │
                   │ (Sleeve shorted to Ground @ 0V) │
                   └────────────────┬────────────────┘
                                    │
@@ -94,199 +83,196 @@ When an inline headset button is clicked, macOS broadcasts the event across **tw
          │                                                   │
          ▼                                                   ▼
 ┌─────────────────────────────────┐         ┌─────────────────────────────────┐
-│   Pipeline A: WindowServer      │         │   Pipeline B: CoreAudio/IOKit   │
-│   (Low-Level GUI Event Stream)  │         │   (nowplayingd & MediaRemote)   │
+│   Pipeline A: WindowServer      │         │   Pipeline B: nowplayingd       │
+│   (Low-Level Event Stream)      │         │   (MediaRemote / Audio Session) │
 └────────────────┬────────────────┘         └────────────────┬────────────────┘
                  │                                           │
                  ▼                                           ▼
 ┌─────────────────────────────────┐         ┌─────────────────────────────────┐
 │          CGEventTap             │         │      MPNowPlayingInfoCenter     │
-│   (Intercepts & Drops Event)    │         │      MPRemoteCommandCenter      │
+│    (Drops WindowServer event)   │         │      MPRemoteCommandCenter      │
 └────────────────┬────────────────┘         └────────────────┬────────────────┘
                  │                                           │
                  ▼                                           ▼
 ┌─────────────────────────────────┐         ┌─────────────────────────────────┐
-│   Virtual Left Ctrl Injected    │         │  Play/Pause Intent Consumed     │
-│     (Toggles Willow Voice)      │         │  (Chrome/Spotify Never Trigger) │
+│   Virtual Left Ctrl Injected    │         │     Play/Pause Intercepted      │
+│     (Toggles Dictation)         │         │  (External players stay quiet)  │
 └─────────────────────────────────┘         └─────────────────────────────────┘
 ```
 
-### Mermaid Event Sequence
+### Event Sequence
 ```mermaid
 sequenceDiagram
     autonumber
     actor User
-    participant Headset as 3.5mm TRRS Button
+    participant Headset as 3.5mm Button
     participant Kernel as AppleHDA (Kernel)
     participant CG as CGEventTap (Pipeline A)
     participant NP as nowplayingd (Pipeline B)
     participant Daemon as headset_dictation Daemon
-    participant Willow as Willow Voice / Whisper Flow
-    participant Media as Chrome / Spotify / Music
+    participant App as Dictation App (Willow/Whisper)
+    participant Media as Media Players (Chrome/Spotify)
 
-    User->>Headset: Clicks Inline Remote
+    User->>Headset: Clicks Button
     Headset->>Kernel: Shorts Mic to Ground (0V)
     Kernel->>CG: Emits NX_SYSDEFINED / NX_KEYTYPE_PLAY
     Kernel->>NP: Emits MediaRemote Play/Pause Event
     
     rect rgb(20, 35, 20)
-        Note over CG,Daemon: Pipeline A Handling
+        Note over CG,Daemon: Pipeline A
         CG->>Daemon: Intercepts raw HID event
-        Daemon-->>CG: Returns nil (Drops event from WindowServer)
-        Daemon->>Willow: Posts Virtual Left Control Key Event
+        Daemon-->>CG: Returns nil (drops from WindowServer)
+        Daemon->>App: Sends Virtual Left Control
     end
 
     rect rgb(20, 20, 35)
-        Note over NP,Media: Pipeline B Handling (Media Shield)
-        Daemon->>NP: Claims active NowPlaying + silent audio lock
-        NP->>Daemon: Routes Play/Pause command to Daemon
-        Daemon-->>NP: Returns .success (Swallows command)
-        Note over Media: Media players remain untouched!
+        Note over NP,Media: Pipeline B
+        Daemon->>NP: Holds active playback state
+        NP->>Daemon: Routes Play/Pause to Daemon
+        Daemon-->>NP: Returns .success (consumes command)
+        Note over Media: Not triggered
     end
 ```
 
 ---
 
-## 🛡️ Multi-Layer Media Shield Architecture
+## Media Key Interception
 
-Without an active shield, `nowplayingd` passes media keys to whichever application is actively playing audio (e.g. YouTube in Chrome or a playlist in Spotify). 
-
-`headset-dictation` deploys a **4-Layer Shield**:
+To keep media apps from responding when you click the headset button, the daemon handles four layers:
 
 ```
 +-----------------------------------------------------------------------------------+
-|                           HEADSET DICTATION DAEMON                                |
+|                              HEADSET DICTATION DAEMON                             |
 |                                                                                   |
-|  [ Layer 1: Ghost Audio Session ]                                                 |
-|    AVAudioEngine + AVAudioPlayerNode (Looping silent 0.0 PCM buffer)              |
-|    --> Registers daemon as an active CoreAudio stream                             |
+|  1. AVAudioEngine                                                                 |
+|     Plays a silent, looping PCM buffer so CoreAudio treats this process as        |
+|     an active audio source.                                                       |
 |                                                                                   |
-|  [ Layer 2: NowPlaying Priority Claim ]                                           |
-|    MPNowPlayingInfoCenter.default().playbackState = .playing                      |
-|    --> Forces nowplayingd to prioritize our daemon over external apps             |
+|  2. MPNowPlayingInfoCenter                                                        |
+|     Sets playbackState = .playing so nowplayingd routes media keys here first.    |
 |                                                                                   |
-|  [ Layer 3: Remote Command Interceptor ]                                          |
-|    MPRemoteCommandCenter (.togglePlayPauseCommand, .playCommand, .pauseCommand)   |
-|    --> Swallows media commands & triggers toggleDictation()                       |
+|  3. MPRemoteCommandCenter                                                         |
+|     Registers handlers for play, pause, and togglePlayPause, then calls           |
+|     toggleDictation() and returns .success.                                       |
 |                                                                                   |
-|  [ Layer 4: Low-Level HID Filter ]                                                |
-|    CGEvent.tapCreate(tap: .cghidEventTap, place: .headInsertEventTap)             |
-|    --> Suppresses NX_SYSDEFINED events from propagating to WindowServer           |
+|  4. CGEventTap                                                                    |
+|     Intercepts NX_SYSDEFINED / NX_KEYTYPE_PLAY events and returns nil to stop     |
+|     propagation through WindowServer.                                             |
 +-----------------------------------------------------------------------------------+
 ```
 
-### Mermaid Architecture Diagram
+### Component Diagram
 ```mermaid
 graph TD
-    subgraph Hardware ["Hardware Layer"]
-        HW_BTN["3.5mm Headset Remote Button"]
-        HW_MIC["Microphone Capsule"]
+    subgraph Hardware ["Hardware"]
+        HW_BTN["3.5mm Remote Button"]
+        HW_MIC["Mic Capsule"]
     end
 
-    subgraph OS_Kernel ["macOS Core / Kernel"]
+    subgraph Kernel ["macOS Kernel"]
         HDA["AppleHDA Driver"]
     end
 
-    subgraph Daemon ["headset_dictation Daemon"]
-        subgraph Media_Shield ["Multi-Layer Media Shield"]
-            L1["Layer 1: AVAudioEngine<br/>(Silent 0.0 PCM Loop)"]
-            L2["Layer 2: MPNowPlayingInfoCenter<br/>(playbackState = .playing)"]
-            L3["Layer 3: MPRemoteCommandCenter<br/>(Swallows Play/Pause)"]
-            L4["Layer 4: CGEventTap<br/>(Drops NX_KEYTYPE_PLAY)"]
-        end
-        DEBOUNCE["Debouncer (300ms)"]
-        VKEY["Virtual Key Injector<br/>(Left Control - KeyCode 59)"]
+    subgraph Daemon ["headset_dictation"]
+        L1["1. AVAudioEngine<br/>(Silent PCM Loop)"]
+        L2["2. MPNowPlayingInfoCenter<br/>(playbackState = .playing)"]
+        L3["3. MPRemoteCommandCenter<br/>(Handles Play/Pause)"]
+        L4["4. CGEventTap<br/>(Drops NX_KEYTYPE_PLAY)"]
+        DEBOUNCE["Debounce (300ms)"]
+        VKEY["Virtual Key (Left Ctrl - 59)"]
     end
 
     subgraph Targets ["Applications"]
-        WILLOW["Willow Voice / Whisper Flow"]
-        EXT_MEDIA["Chrome / Spotify / Apple Music"]
+        DICT["Dictation App"]
+        MEDIA["Chrome / Spotify / Music"]
     end
 
     HW_BTN -->|Short to Ground| HDA
     HDA -->|NX_SYSDEFINED| L4
     HDA -->|MediaRemote| L3
 
-    L1 -.->|Active Audio Stream| L2
-    L2 -.->|Priority Lock| L3
+    L1 -.->|Active Audio| L2
+    L2 -.->|Routing Priority| L3
     
-    L4 -->|Filtered Trigger| DEBOUNCE
-    L3 -->|Command Handled| DEBOUNCE
+    L4 --> DEBOUNCE
+    L3 --> DEBOUNCE
     
     DEBOUNCE --> VKEY
-    VKEY -->|Control Down / Up| WILLOW
+    VKEY -->|Control Down / Up| DICT
 
-    L3 -.->|BLOCKED| EXT_MEDIA
-    L4 -.->|BLOCKED| EXT_MEDIA
-
-    style Hardware fill:#2d3748,stroke:#cbd5e0,color:#fff
-    style OS_Kernel fill:#1a202c,stroke:#a0aec0,color:#fff
-    style Daemon fill:#1a365d,stroke:#63b3ed,color:#fff
-    style Media_Shield fill:#2a4365,stroke:#90cdf4,color:#fff
-    style Targets fill:#22543d,stroke:#68d391,color:#fff
+    L3 -.->|Blocked| MEDIA
+    L4 -.->|Blocked| MEDIA
 ```
 
 ---
 
-## 🚀 Quick Start
+## How It Works
 
-### Prerequisites
-- macOS 13.0 (Ventura) or later
-- Swift 6.0+ / Xcode Command Line Tools (`xcode-select --install`)
+1. The daemon starts a silent `AVAudioEngine` and marks its playback state as active in `MPNowPlayingInfoCenter`.
+2. A low-level `CGEventTap` listens for `NX_SYSDEFINED` events with subtype `NX_SUBTYPE_AUX_CONTROL_BUTTONS` and key code `NX_KEYTYPE_PLAY`.
+3. When a click occurs:
+   - It debounces events within 300ms to avoid double-triggers.
+   - It toggles internal recording state.
+   - It injects a virtual Left Control key press (`keyCode: 59`) to start or stop dictation.
+   - It consumes the media event so other apps do not pause or play.
 
-### Build & Run
-Clone the repository and compile using `make`:
+---
+
+## Quick Start
+
+### Requirements
+- macOS 13.0+
+- Swift compiler (`xcode-select --install` or Xcode)
+
+### Build and Run
 
 ```bash
 git clone https://github.com/matgCodes/headset-dictation.git
 cd headset-dictation
 
-# Build and run directly in foreground
+# Build and run
 make run
 ```
 
-### Granting Accessibility Permissions
-Because the daemon creates a low-level `CGEventTap` and synthesizes `CGEvent` key presses, macOS requires **Accessibility** permissions:
+### Accessibility Permissions
 
-1. Open **System Settings $\rightarrow$ Privacy & Security $\rightarrow$ Accessibility**.
-2. Enable your **Terminal** app (or `headset_dictation` binary).
-3. If permissions were missing on first run, restart the process.
+The daemon needs Accessibility access to create the event tap and post virtual keystrokes:
+
+1. Open **System Settings -> Privacy & Security -> Accessibility**.
+2. Add and enable your terminal application (or the `headset_dictation` binary).
+3. If running for the first time, restart the terminal after enabling access.
 
 ---
 
-## ⚙️ Background Service (LaunchAgent)
+## Running as a Background Service
 
-To have `headset-dictation` start automatically at login and run silently in the background:
+To run the listener in the background and start it automatically at login:
 
 ```bash
-# Install and start LaunchAgent
+# Install and load the LaunchAgent
 make install
 
-# Check logs
+# View logs
 tail -f /tmp/headset_dictation.log
 
-# Uninstall LaunchAgent
+# Stop and uninstall
 make uninstall
 ```
 
-The installer configures `~/Library/LaunchAgents/com.user.headsetdictation.plist` with `RunAtLoad` and `KeepAlive` enabled.
+The service plist is placed at `~/Library/LaunchAgents/com.user.headsetdictation.plist`.
 
 ---
 
-## 🔧 Troubleshooting & Chrome Media Key Isolation
+## Chrome Media Key Handling
 
-### Chrome / Chromium Hardware Media Key Hook
-Modern Chromium browsers (Google Chrome, Brave, Arc, Edge) can attach directly to macOS IOKit hardware media keys. While our daemon's `AVAudioEngine` lock isolates media keys in 99% of configurations, you can completely isolate Chromium by disabling hardware key interception:
+If Chromium browsers (Chrome, Brave, Arc, Edge) still capture media keys via raw IOKit hooks:
 
-1. Open Chrome and navigate to:
-   ```
-   chrome://flags/#hardware-media-key-handling
-   ```
-2. Change the setting from **Default** to **Disabled**.
-3. Relaunch Chrome.
+1. Go to `chrome://flags/#hardware-media-key-handling` in the browser.
+2. Set the flag to **Disabled**.
+3. Relaunch the browser.
 
 ---
 
-## 📄 License
+## License
 
-MIT License. See [LICENSE](LICENSE) for details.
+MIT. See [LICENSE](LICENSE).

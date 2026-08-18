@@ -46,9 +46,8 @@ func toggleDictation() {
 }
 
 // -------------------------------------------------------------
-// Layer 1: Ghost Audio Session (AVAudioEngine)
-// Plays a continuous, zero-volume silent PCM loop.
-// This registers our daemon with macOS CoreAudio as an active audio producer.
+// 1. Silent Audio Engine (AVAudioEngine)
+// Loops a zero-volume buffer so macOS registers active audio output.
 // -------------------------------------------------------------
 func setupSilentAudioEngine() -> AVAudioEngine? {
     let engine = AVAudioEngine()
@@ -60,7 +59,7 @@ func setupSilentAudioEngine() -> AVAudioEngine? {
     }
 
     engine.connect(player, to: engine.mainMixerNode, format: format)
-    engine.mainMixerNode.outputVolume = 0.0 // Ensure complete silence
+    engine.mainMixerNode.outputVolume = 0.0
 
     guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1024) else {
         return nil
@@ -76,23 +75,21 @@ func setupSilentAudioEngine() -> AVAudioEngine? {
         player.play()
         return engine
     } catch {
-        print("⚠️ Warning: Could not start silent audio engine: \(error)")
+        print("Error starting audio engine: \(error)")
         return nil
     }
 }
 
-// Retain the engine instance globally
 let activeAudioEngine = setupSilentAudioEngine()
 
 // -------------------------------------------------------------
-// Layer 2: MPRemoteCommandCenter & MPNowPlayingInfoCenter
-// Claims active media playback state so nowplayingd routes all
-// hardware Play/Pause events exclusively to our daemon.
+// 2. NowPlaying Registration & MPRemoteCommandCenter
+// Claims media key routing priority in nowplayingd and consumes commands.
 // -------------------------------------------------------------
 let nowPlayingCenter = MPNowPlayingInfoCenter.default()
 nowPlayingCenter.nowPlayingInfo = [
-    MPMediaItemPropertyTitle: "Headset Dictation Shield",
-    MPMediaItemPropertyArtist: "System Daemon"
+    MPMediaItemPropertyTitle: "Headset Dictation",
+    MPMediaItemPropertyArtist: "System"
 ]
 nowPlayingCenter.playbackState = .playing
 
@@ -101,7 +98,7 @@ let commandCenter = MPRemoteCommandCenter.shared()
 commandCenter.togglePlayPauseCommand.isEnabled = true
 commandCenter.togglePlayPauseCommand.addTarget { _ in
     toggleDictation()
-    return .success // Swallows the command cleanly
+    return .success
 }
 
 commandCenter.playCommand.isEnabled = true
@@ -117,8 +114,8 @@ commandCenter.pauseCommand.addTarget { _ in
 }
 
 // -------------------------------------------------------------
-// Layer 3: CoreGraphics Low-Level Event Tap
-// Blocks the raw HID keyboard/consumer event stream from reaching WindowServer.
+// 3. Low-Level Event Tap
+// Intercepts and drops NX_KEYTYPE_PLAY events before WindowServer.
 // -------------------------------------------------------------
 let callback: CGEventTapCallBack = { proxy, type, event, refcon in
     if type.rawValue == NX_SYSDEFINED {
@@ -132,7 +129,6 @@ let callback: CGEventTapCallBack = { proxy, type, event, refcon in
                 if isKeyDown {
                     toggleDictation()
                 }
-                // Completely consume the event
                 return nil
             }
         }
@@ -148,8 +144,7 @@ guard let eventTap = CGEvent.tapCreate(
     callback: callback,
     userInfo: nil
 ) else {
-    fputs("Error: Could not create event tap.\n", stderr)
-    fputs("Please enable Accessibility permissions for Terminal / headset_dictation in System Settings -> Privacy & Security -> Accessibility.\n", stderr)
+    fputs("Error: Could not create event tap. Ensure Accessibility permissions are granted in System Settings -> Privacy & Security -> Accessibility.\n", stderr)
     exit(1)
 }
 
@@ -157,14 +152,7 @@ let runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, eventTap,
 CFRunLoopAddSource(CFRunLoopGetCurrent(), runLoopSource, .commonModes)
 CGEvent.tapEnable(tap: eventTap, enable: true)
 
-print("=====================================================")
-print(" 🎙️ Willow Voice 3.5mm Headset Controller")
-print(" [Triple-Layer Media Shield Active]")
-print("  - Layer 1: AVAudioEngine (Silent audio session lock)")
-print("  - Layer 2: MPNowPlayingInfoCenter (nowplayingd priority)")
-print("  - Layer 3: CGEventTap (Raw HID media key filter)")
-print(" Press Ctrl+C in Terminal to stop.")
-print("=====================================================")
+print("Headset dictation listener active. Press Ctrl+C to stop.")
 fflush(stdout)
 
 // Run the main application loop
