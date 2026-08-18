@@ -103,34 +103,21 @@ When the inline button is pressed, macOS sends the event down two separate paths
 ### Event Sequence
 ```mermaid
 sequenceDiagram
-    autonumber
     actor User
-    participant Headset as 3.5mm Button
-    participant Kernel as AppleHDA (Kernel)
-    participant CG as CGEventTap (Pipeline A)
-    participant NP as nowplayingd (Pipeline B)
-    participant Daemon as headset_dictation Daemon
-    participant App as Dictation App (Willow/Whisper)
+    participant OS as macOS Audio System
+    participant Daemon as headset_dictation
+    participant Dictation as Dictation App (Willow)
     participant Media as Media Players (Chrome/Spotify)
 
-    User->>Headset: Clicks Button
-    Headset->>Kernel: Shorts Mic to Ground (0V)
-    Kernel->>CG: Emits NX_SYSDEFINED / NX_KEYTYPE_PLAY
-    Kernel->>NP: Emits MediaRemote Play/Pause Event
-    
-    rect rgb(20, 35, 20)
-        Note over CG,Daemon: Pipeline A
-        CG->>Daemon: Intercepts raw HID event
-        Daemon-->>CG: Returns nil (drops from WindowServer)
-        Daemon->>App: Sends Virtual Left Control
-    end
-
-    rect rgb(20, 20, 35)
-        Note over NP,Media: Pipeline B
-        Daemon->>NP: Holds active playback state
-        NP->>Daemon: Routes Play/Pause to Daemon
-        Daemon-->>NP: Returns .success (consumes command)
-        Note over Media: Not triggered
+    User->>OS: Click headset button
+    par Pipeline A: WindowServer
+        OS->>Daemon: NX_KEYTYPE_PLAY event
+        Daemon-->>OS: Drop event (return nil)
+        Daemon->>Dictation: Toggle Left Control
+    and Pipeline B: nowplayingd
+        OS->>Daemon: Media command
+        Daemon-->>OS: Return .success (consume)
+        Note over Media: Never received
     end
 ```
 
@@ -161,47 +148,16 @@ To keep media apps from responding when you click the headset button, the daemon
 +-----------------------------------------------------------------------------------+
 ```
 
-### Component Diagram
+### Flow Diagram
 ```mermaid
-graph TD
-    subgraph Hardware ["Hardware"]
-        HW_BTN["3.5mm Remote Button"]
-        HW_MIC["Mic Capsule"]
-    end
+flowchart TD
+    Click[3.5mm Button Click] --> Daemon[headset_dictation]
 
-    subgraph Kernel ["macOS Kernel"]
-        HDA["AppleHDA Driver"]
-    end
+    Daemon -->|1. Drop raw key event| WindowServer[WindowServer]
+    Daemon -->|2. Consume play/pause| NowPlaying[nowplayingd]
+    Daemon -->|3. Toggle Left Control| Dictation[Dictation App]
 
-    subgraph Daemon ["headset_dictation"]
-        L1["1. AVAudioEngine<br/>(Silent PCM Loop)"]
-        L2["2. MPNowPlayingInfoCenter<br/>(playbackState = .playing)"]
-        L3["3. MPRemoteCommandCenter<br/>(Handles Play/Pause)"]
-        L4["4. CGEventTap<br/>(Drops NX_KEYTYPE_PLAY)"]
-        DEBOUNCE["Debounce (300ms)"]
-        VKEY["Virtual Key (Left Ctrl - 59)"]
-    end
-
-    subgraph Targets ["Applications"]
-        DICT["Dictation App"]
-        MEDIA["Chrome / Spotify / Music"]
-    end
-
-    HW_BTN -->|Short to Ground| HDA
-    HDA -->|NX_SYSDEFINED| L4
-    HDA -->|MediaRemote| L3
-
-    L1 -.->|Active Audio| L2
-    L2 -.->|Routing Priority| L3
-    
-    L4 --> DEBOUNCE
-    L3 --> DEBOUNCE
-    
-    DEBOUNCE --> VKEY
-    VKEY -->|Control Down / Up| DICT
-
-    L3 -.->|Blocked| MEDIA
-    L4 -.->|Blocked| MEDIA
+    NowPlaying -.->|Blocked| Media[Chrome / Spotify / Music]
 ```
 
 ---
