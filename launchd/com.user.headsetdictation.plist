@@ -6,8 +6,8 @@
     <string>com.user.headsetdictation</string>
     <key>ProgramArguments</key>
     <array>
-        <!-- Replace with path to compiled binary or install path -->
-        <string>/Users/mag_station/Dev_Tools/headset-dictation/headset_dictation</string>
+        <!-- Executable inside the authorized .app bundle -->
+        <string>/Users/mag_station/Dev_Tools/headset-dictation/HeadsetDictation.app/Contents/MacOS/headset_dictation</string>
     </array>
     <key>RunAtLoad</key>
     <true/>

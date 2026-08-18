@@ -1,5 +1,6 @@
 # Build artifacts & binaries
 headset_dictation
+*.app
 *.o
 *.dSYM/
 build/

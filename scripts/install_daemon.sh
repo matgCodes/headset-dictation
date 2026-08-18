@@ -12,7 +12,7 @@ TARGET_PLIST="${TARGET_DIR}/${PLIST_NAME}"
 mkdir -p "${TARGET_DIR}"
 
 # Update binary path in plist to absolute root path if needed
-sed "s|/Users/mag_station/Dev_Tools/headset-dictation/headset_dictation|${ROOT_DIR}/headset_dictation|g" \
+sed "s|/Users/mag_station/Dev_Tools/headset-dictation/HeadsetDictation.app/Contents/MacOS/headset_dictation|${ROOT_DIR}/HeadsetDictation.app/Contents/MacOS/headset_dictation|g" \
     "${ROOT_DIR}/launchd/${PLIST_NAME}" > "${TARGET_PLIST}"
 
 echo "==> Unloading any existing daemon..."
