@@ -63,84 +63,101 @@ Instead of hold-to-talk, the listener uses click-to-toggle:
 
 ---
 
-## macOS Event Routing
+## macOS Event Routing & Hardware Isolation
 
-When the inline button is pressed, macOS sends the event down two separate paths:
+macOS registers the 3.5mm headphone jack as an independent input device (`Transport: Audio`, `Product: Headset`, `UsagePage: 12`) distinct from the built-in keyboard (`Transport: FIFO`) or Bluetooth peripherals (`Transport: Bluetooth`).
 
-```
-                  ┌─────────────────────────────────┐
-                  │   3.5mm Headset Button Click    │
-                  │ (Sleeve shorted to Ground @ 0V) │
-                  └────────────────┬────────────────┘
-                                   │
-                                   ▼
-                  ┌─────────────────────────────────┐
-                  │   AppleHDA Audio Kernel Driver  │
-                  │   Emits NX_KEYTYPE_PLAY (0x10)  │
-                  └────────────────┬────────────────┘
-                                   │
-         ┌─────────────────────────┴─────────────────────────┐
-         │                                                   │
-         ▼                                                   ▼
-┌─────────────────────────────────┐         ┌─────────────────────────────────┐
-│   Pipeline A: WindowServer      │         │   Pipeline B: nowplayingd       │
-│   (Low-Level Event Stream)      │         │   (MediaRemote / Audio Session) │
-└────────────────┬────────────────┘         └────────────────┬────────────────┘
-                 │                                           │
-                 ▼                                           ▼
-┌─────────────────────────────────┐         ┌─────────────────────────────────┐
-│          CGEventTap             │         │      MPNowPlayingInfoCenter     │
-│    (Drops WindowServer event)   │         │      MPRemoteCommandCenter      │
-└────────────────┬────────────────┘         └────────────────┬────────────────┘
-                 │                                           │
-                 ▼                                           ▼
-┌─────────────────────────────────┐         ┌─────────────────────────────────┐
-│   Virtual Left Ctrl Injected    │         │     Play/Pause Intercepted      │
-│     (Toggles Dictation)         │         │  (External players stay quiet)  │
-└─────────────────────────────────┘         └─────────────────────────────────┘
+```mermaid
+graph TD
+    subgraph Hardware["1. Physical Hardware Layer"]
+        Headset["3.5mm TRRS Headset Button<br/>(Shorts Mic to Ground)"]
+        Kbd["Mac Keyboard / Media Keys<br/>(F7 / F8 / F9)"]
+        BT["Magic Keyboard / Bluetooth"]
+    end
+
+    subgraph IOKit["2. macOS IOKit Device Registry"]
+        DevAudio["Device: Headset<br/>Transport: Audio | UsagePage: 12"]
+        DevFIFO["Device: Built-in Keyboard<br/>Transport: FIFO"]
+        DevBT["Device: Magic Keyboard<br/>Transport: Bluetooth"]
+    end
+
+    Headset -->|Pin 4 Grounded| DevAudio
+    Kbd --> DevFIFO
+    BT --> DevBT
+
+    subgraph Dispatch["3. Dispatch & Seize Layer"]
+        Seize["Exclusive Hardware Seize<br/>(kIOHIDOptionsTypeSeizeDevice)"]
+        Shared["Standard Shared Event Bus<br/>(WindowServer / nowplayingd)"]
+    end
+
+    DevAudio ==>|Targeted & Isolated| Seize
+    DevFIFO --> Shared
+    DevBT --> Shared
+
+    subgraph Daemon["4. headset_dictation Daemon"]
+        Listener["IOHIDManager Input Callback"]
+        Shield["Triple-Layer Media Shield<br/>• AVAudioEngine Silent Session<br/>• MPNowPlayingInfoCenter Lock<br/>• CGEventTap Filter"]
+        VirtKey["Virtual Left Control Event<br/>(CGEvent keyCode: 59)"]
+    end
+
+    Seize -->|Exclusive Stream| Listener
+    Listener --> VirtKey
+    Shield -.->|Suppresses Media| Dispatch
+
+    subgraph Endpoints["5. Target Endpoints"]
+        Willow["🎙️ Dictation App<br/>(Willow Voice / Whisper Flow)"]
+        Media["🎵 Media Players<br/>(Chrome / YouTube / Spotify / Music)"]
+    end
+
+    VirtKey ==>|Toggles Dictation| Willow
+    Shared ==>|Controls Playback Normally| Media
+
+    classDef daemon fill:#1e293b,stroke:#3b82f6,stroke-width:2px,color:#fff;
+    classDef hardware fill:#0f172a,stroke:#475569,stroke-width:1px,color:#fff;
+    classDef endpoint fill:#064e3b,stroke:#10b981,stroke-width:1px,color:#fff;
+    class Daemon,Listener,Shield,VirtKey daemon;
+    class Hardware,Headset,Kbd,BT,IOKit,DevAudio,DevFIFO,DevBT,Dispatch,Seize,Shared hardware;
+    class Willow,Media endpoint;
 ```
 
 ### Event Sequence
 ```mermaid
 sequenceDiagram
     actor User
-    participant OS as macOS Audio System
-    participant Daemon as headset_dictation
-    participant Dictation as Dictation App (Willow)
-    participant Media as Media Players (Chrome/Spotify)
+    participant HW as 3.5mm Headset Jack (Audio Transport)
+    participant IOKit as IOKit (Device: Headset)
+    participant Daemon as headset_dictation Daemon
+    participant Dictation as Willow Voice (Dictation)
+    participant Media as Chrome / YouTube / Spotify
 
-    User->>OS: Click headset button
-    par Pipeline A: WindowServer
-        OS->>Daemon: NX_KEYTYPE_PLAY event
-        Daemon-->>OS: Drop event (return nil)
-        Daemon->>Dictation: Toggle Left Control
-    and Pipeline B: nowplayingd
-        OS->>Daemon: Media command
-        Daemon-->>OS: Return .success (consume)
-        Note over Media: Never received
-    end
+    User->>HW: Click inline button (short to 0V)
+    HW->>IOKit: Hardware interrupt (UsagePage: 12, Usage: 1)
+    IOKit->>Daemon: Exclusive Seized HID Event
+    Note over IOKit,Media: Bypasses shared bus (Media players receive nothing)
+    Daemon->>Dictation: Dispatch Virtual Left Control (keyCode 59)
+    Note over Dictation: Dictation starts / stops
 ```
 
 ---
 
-## Media Key Interception
+## Media Key Interception & Shielding Architecture
 
-To keep media apps from responding when you click the headset button, the daemon handles four layers:
+To keep media apps from responding when you click the headset button, the daemon handles four distinct layers:
 
 ```
 +-----------------------------------------------------------------------------------+
 |                              HEADSET DICTATION DAEMON                             |
 |                                                                                   |
-|  1. AVAudioEngine                                                                 |
+|  1. IOHIDManager (Exclusive Seize)                                                |
+|     Opens the "Headset" device exclusively (kIOHIDOptionsTypeSeizeDevice) to      |
+|     prevent Chromium and nowplayingd from receiving raw hardware events.          |
+|                                                                                   |
+|  2. AVAudioEngine (CoreAudio Lock)                                                |
 |     Plays a silent, looping PCM buffer so CoreAudio treats this process as        |
 |     an active audio source.                                                       |
 |                                                                                   |
-|  2. MPNowPlayingInfoCenter                                                        |
+|  3. MPNowPlayingInfoCenter                                                        |
 |     Sets playbackState = .playing so nowplayingd routes media keys here first.    |
-|                                                                                   |
-|  3. MPRemoteCommandCenter                                                         |
-|     Registers handlers for play, pause, and togglePlayPause, then calls           |
-|     toggleDictation() and returns .success.                                       |
 |                                                                                   |
 |  4. CGEventTap                                                                    |
 |     Intercepts NX_SYSDEFINED / NX_KEYTYPE_PLAY events and returns nil to stop     |
