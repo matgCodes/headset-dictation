@@ -10,15 +10,15 @@ This daemon intercepts the inline button on standard 3.5mm TRRS headsets (Apple 
 - [Hardware Details](#hardware-details)
   - [3.5mm TRRS (CTIA) Pinout](#35mm-trrs-ctia-pinout)
   - [Why Hold-to-Talk Does Not Work](#why-hold-to-talk-does-not-work)
-- [macOS Event Routing](#macos-event-routing)
-- [Media Key Interception](#media-key-interception)
+- [macOS Event Routing & Hardware Isolation](#macos-event-routing--hardware-isolation)
+- [Media Key Interception & Shielding Architecture](#media-key-interception--shielding-architecture)
+- [Deep Dive Case Study (Chromium IOHID Bypass)](#deep-dive-case-study)
 - [How It Works](#how-it-works)
 - [Quick Start](#quick-start)
   - [Requirements](#requirements)
   - [Build and Run](#build-and-run)
   - [Accessibility Permissions](#accessibility-permissions)
 - [Running as a Background Service](#running-as-a-background-service)
-- [Chrome Media Key Handling](#chrome-media-key-handling)
 - [License](#license)
 
 ---
@@ -179,15 +179,29 @@ flowchart TD
 
 ---
 
+## Deep Dive Case Study
+
+For a comprehensive technical post-mortem on how we discovered Chromium's low-level Mach port hook and solved it at the driver boundary, read the full case study:
+
+📖 **[Case Study: Solving the Chromium IOHID Media Key Bypass via Hardware Seize Mode](docs/case-study-chromium-iohid-bypass.md)**
+
+Includes:
+* Physical 3.5mm TRRS voltage sensing and switch physics
+* The tri-pipeline macOS event dispatch breakdown (WindowServer vs. `nowplayingd` vs. Chromium IOKit Mach port)
+* Full multi-stage Mermaid architecture diagrams
+* Key architecture takeaways for macOS hardware daemon development
+
+---
+
 ## How It Works
 
-1. The daemon starts a silent `AVAudioEngine` and marks its playback state as active in `MPNowPlayingInfoCenter`.
-2. A low-level `CGEventTap` listens for `NX_SYSDEFINED` events with subtype `NX_SUBTYPE_AUX_CONTROL_BUTTONS` and key code `NX_KEYTYPE_PLAY`.
-3. When a click occurs:
-   - It debounces events within 300ms to avoid double-triggers.
-   - It toggles internal recording state.
-   - It injects a virtual Left Control key press (`keyCode: 59`) to start or stop dictation.
-   - It consumes the media event so other apps do not pause or play.
+1. The daemon initializes an `IOHIDManager` targeting devices matching `Transport: Audio` and `Product: Headset`.
+2. It opens the port in exclusive seize mode (`kIOHIDOptionsTypeSeizeDevice`), causing macOS to route 3.5mm button interrupts solely to the daemon while halting broadcast to the rest of the OS.
+3. When the physical button is pressed:
+   - It debounces events within 300ms to eliminate hardware switch bounce.
+   - It toggles the internal recording state.
+   - It injects a virtual Left Control key press (`keyCode: 59`) to start or stop speech-to-text dictation in Willow Voice / Whisper Flow.
+   - Chrome, Spotify, Apple Music, and YouTube receive zero packets and never pause.
 
 ---
 
