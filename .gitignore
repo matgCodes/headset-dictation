@@ -1,0 +1,17 @@
+# Build artifacts & binaries
+headset_dictation
+*.o
+*.dSYM/
+build/
+bin/
+
+# macOS system files
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+
+# Temporary files
+*.swp
+*.tmp
+/tmp/
