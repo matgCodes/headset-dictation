@@ -309,8 +309,22 @@ For the LaunchAgent, add an `EnvironmentVariables` dict to
 </dict>
 ```
 
-Note that this is not the setting for Willow Voice, whose hotkey is `Fn+Ctrl` rather
-than `F15`. Point `TRIGGER_KEY_CODE` at whatever keycode your app is actually bound to.
+**Willow Voice needs this.** Its dictation hotkey, in
+`~/Library/Application Support/com.seewillow.WillowMac/Preferences/preferences.json`,
+is a bare F15 with no modifiers:
+
+```json
+"hotkeyData": { "keyName": "F15", "keyCode": 113, "modifiers": 0, "additionalModifiers": [] }
+```
+
+(Willow's UI labels that preset "Fn", and a separate `hasMigratedAssistantHotkeyToFnCtrl`
+flag covers its *assistant* hotkey — neither describes the dictation binding.)
+
+### Wispr Flow and Willow Voice at the same time
+
+You cannot drive both from one headset click with a single build. Wispr needs `Fn+F15`,
+Willow needs bare `F15`, and the daemon emits one chord. Pick one with
+`HEADSET_DICTATION_FN`, or rebind one of the apps so both want the same chord.
 
 ### Stuck-key safety
 
