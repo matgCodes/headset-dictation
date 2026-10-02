@@ -289,16 +289,28 @@ If Wispr Flow's PTT shortcut is bound to something other than `113+63`, rebind i
 `Fn+F15` in **Wispr Flow → Settings → Shortcuts**, or change `TRIGGER_KEY_CODE` in
 `dictation_listener.swift` to match.
 
-### Willow Voice and bare-F15 apps
+### Apps bound to a bare F15
 
-Apps bound to a plain `F15` with no modifier do not want the `Fn` chord. Disable it:
+If your dictation app's shortcut is a plain `F15` with no modifier, the `Fn` chord will
+not match it. Drop the modifier:
 
 ```bash
 HEADSET_DICTATION_FN=0 make run
 ```
 
-For the LaunchAgent, add it to the `EnvironmentVariables` dict in
-`launchd/com.user.headsetdictation.plist`.
+For the LaunchAgent, add an `EnvironmentVariables` dict to
+`launchd/com.user.headsetdictation.plist`:
+
+```xml
+<key>EnvironmentVariables</key>
+<dict>
+    <key>HEADSET_DICTATION_FN</key>
+    <string>0</string>
+</dict>
+```
+
+Note that this is not the setting for Willow Voice, whose hotkey is `Fn+Ctrl` rather
+than `F15`. Point `TRIGGER_KEY_CODE` at whatever keycode your app is actually bound to.
 
 ### Stuck-key safety
 
