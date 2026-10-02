@@ -13,7 +13,7 @@ let FN_KEY_CODE: CGKeyCode = 63
 /// on the F15 event alone is not matched. Both keys must stay down for the whole
 /// dictation; releasing Fn early leaves the session orphaned.
 ///
-/// Dictation apps bound to a bare F15 (e.g. Willow Voice) want this off:
+/// Dictation apps bound to a bare F15, with no modifier, want this off:
 ///   HEADSET_DICTATION_FN=0
 let USE_FN_MODIFIER = ProcessInfo.processInfo.environment["HEADSET_DICTATION_FN"] != "0"
 
