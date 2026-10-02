@@ -2,7 +2,7 @@
 
 Use a wired 3.5mm headset button to toggle dictation on macOS without triggering media players.
 
-This daemon intercepts the inline button on standard 3.5mm TRRS headsets (Apple EarPods, Bose, etc.) and converts clicks into a keyboard shortcut (Left Control) for dictation apps like Willow Voice or Whisper Flow. It also blocks macOS from routing the click as a Play/Pause command to apps like Chrome, Spotify, or Apple Music.
+This daemon intercepts the inline button on standard 3.5mm TRRS headsets (Apple EarPods, Bose, etc.) and converts clicks into a keyboard shortcut (`Fn+F15` by default) for dictation apps like Wispr Flow or Willow Voice. It also blocks macOS from routing the click as a Play/Pause command to apps like Chrome, Spotify, or Apple Music.
 
 ---
 
@@ -19,6 +19,7 @@ This daemon intercepts the inline button on standard 3.5mm TRRS headsets (Apple 
   - [Build and Run](#build-and-run)
   - [Accessibility Permissions](#accessibility-permissions)
 - [Running as a Background Service](#running-as-a-background-service)
+- [Dictation App Compatibility](#dictation-app-compatibility)
 - [License](#license)
 
 ---
@@ -58,8 +59,10 @@ The inline remote button is a mechanical switch connected between the microphone
 
 **Toggle Mode:**
 Instead of hold-to-talk, the listener uses click-to-toggle:
-1. **First click:** Sends `Control Down` to start dictation. Releasing the button un-grounds the mic so you can speak normally.
-2. **Second click:** Sends `Control Up` to stop dictation and start transcription.
+1. **First click:** Presses and holds the trigger chord to start dictation. Releasing the button un-grounds the mic so you can speak normally.
+2. **Second click:** Releases the chord to stop dictation and start transcription.
+
+The chord stays virtually held between the two clicks, which is what lets a click-to-toggle button drive a push-to-talk app.
 
 ---
 
@@ -97,7 +100,7 @@ graph TD
     subgraph Daemon["4. headset_dictation Daemon"]
         Listener["IOHIDManager Input Callback"]
         Shield["Triple-Layer Media Shield<br/>• AVAudioEngine Silent Session<br/>• MPNowPlayingInfoCenter Lock<br/>• CGEventTap Filter"]
-        VirtKey["Virtual Left Control Event<br/>(CGEvent keyCode: 59)"]
+        VirtKey["Virtual Fn+F15 Chord<br/>(CGEvent keyCode: 63 + 113)"]
     end
 
     Seize -->|Exclusive Stream| Listener
@@ -105,7 +108,7 @@ graph TD
     Shield -.->|Suppresses Media| Dispatch
 
     subgraph Endpoints["5. Target Endpoints"]
-        Willow["🎙️ Dictation App<br/>(Willow Voice / Whisper Flow)"]
+        Willow["🎙️ Dictation App<br/>(Wispr Flow / Willow Voice)"]
         Media["🎵 Media Players<br/>(Chrome / YouTube / Spotify / Music)"]
     end
 
@@ -134,7 +137,7 @@ sequenceDiagram
     HW->>IOKit: Hardware interrupt (UsagePage: 12, Usage: 1)
     IOKit->>Daemon: Exclusive Seized HID Event
     Note over IOKit,Media: Bypasses shared bus (Media players receive nothing)
-    Daemon->>Dictation: Dispatch Virtual Left Control (keyCode 59)
+    Daemon->>Dictation: Dispatch Virtual Fn+F15 chord (keyCode 63 + 113)
     Note over Dictation: Dictation starts / stops
 ```
 
@@ -172,7 +175,7 @@ flowchart TD
 
     Daemon -->|1. Drop raw key event| WindowServer[WindowServer]
     Daemon -->|2. Consume play/pause| NowPlaying[nowplayingd]
-    Daemon -->|3. Toggle Left Control| Dictation[Dictation App]
+    Daemon -->|3. Hold/release Fn+F15| Dictation[Dictation App]
 
     NowPlaying -.->|Blocked| Media[Chrome / Spotify / Music]
 ```
@@ -200,7 +203,7 @@ Includes:
 3. When the physical button is pressed:
    - It debounces events within 300ms to eliminate hardware switch bounce.
    - It toggles the internal recording state.
-   - It injects a virtual Left Control key press (`keyCode: 59`) to start or stop speech-to-text dictation in Willow Voice / Whisper Flow.
+   - It injects a virtual `Fn+F15` chord (`keyCode: 63` + `113`) to start or stop speech-to-text dictation in Wispr Flow / Willow Voice.
    - Chrome, Spotify, Apple Music, and YouTube receive zero packets and never pause.
 
 ---
@@ -247,6 +250,63 @@ make uninstall
 ```
 
 The service plist is placed at `~/Library/LaunchAgents/com.user.headsetdictation.plist`.
+
+---
+
+## Dictation App Compatibility
+
+### Wispr Flow (default)
+
+Wispr Flow stores its hotkeys in `~/Library/Application Support/Wispr Flow/config.json`
+as lists of raw macOS virtual keycodes. Push-to-talk is registered as a **two-keycode
+chord**:
+
+```json
+"shortcuts": { "113+63": "ptt" }
+```
+
+- `113` = `F15`
+- `63`  = `Fn` (`kVK_Function`)
+
+Two things about that chord are easy to get wrong, and both were confirmed by testing
+against a live Wispr Flow install:
+
+1. **Setting the `.maskSecondaryFn` flag on the F15 event is not enough.** Wispr matches
+   a genuine keycode-63 `flagsChanged` event. A bare F15 — with or without the flag —
+   starts no dictation session at all.
+2. **Both keys must stay down for the whole dictation.** Releasing `Fn` early, or tapping
+   the chord rather than holding it, creates a session row that is never completed: no
+   duration, no transcript.
+
+So the daemon posts the chord in this order:
+
+| Click | Event sequence |
+|-------|----------------|
+| First (start)  | `flagsChanged` keycode 63, flags `.maskSecondaryFn` → 30 ms → `F15` keyDown, flags `.maskSecondaryFn` |
+| Second (stop)  | `F15` keyUp, flags `.maskSecondaryFn` → 30 ms → `flagsChanged` keycode 63, flags `[]` |
+
+If Wispr Flow's PTT shortcut is bound to something other than `113+63`, rebind it to
+`Fn+F15` in **Wispr Flow → Settings → Shortcuts**, or change `TRIGGER_KEY_CODE` in
+`dictation_listener.swift` to match.
+
+### Willow Voice and bare-F15 apps
+
+Apps bound to a plain `F15` with no modifier do not want the `Fn` chord. Disable it:
+
+```bash
+HEADSET_DICTATION_FN=0 make run
+```
+
+For the LaunchAgent, add it to the `EnvironmentVariables` dict in
+`launchd/com.user.headsetdictation.plist`.
+
+### Stuck-key safety
+
+Because the chord is held between clicks, the daemon guards against it being left down:
+
+- A watchdog releases the chord after `MAX_RECORDING_SECONDS` (default 300) if a second
+  click never arrives.
+- `SIGINT` / `SIGTERM` release the chord before the process exits.
 
 ---
 
