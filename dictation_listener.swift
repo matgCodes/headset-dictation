@@ -211,7 +211,21 @@ class EventTapAdapter {
         guard let eventTap = CGEvent.tapCreate(
             tap: .cghidEventTap, place: .headInsertEventTap, options: .defaultTap,
             eventsOfInterest: CGEventMask(1 << NX_SYSDEFINED), callback: eventTapCallback, userInfo: nil
-        ) else { exit(1) }
+        ) else {
+            // Almost always Accessibility. The grant is tied to the binary's cdhash
+            // under ad-hoc signing, so any rebuild invalidates it and lands here.
+            FileHandle.standardError.write(Data("""
+                FATAL: could not create the event tap — Accessibility is not granted.
+                AXIsProcessTrusted() = \(AXIsProcessTrusted())
+
+                Open System Settings -> Privacy & Security -> Accessibility, remove any
+                existing "Headset Dictation" entry with the - button, then add
+                \(Bundle.main.bundlePath)
+                and make sure it is toggled on. Re-run `make install` afterwards.
+
+                """.utf8))
+            exit(1)
+        }
         globalEventTap = eventTap
         let runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, eventTap, 0)
         CFRunLoopAddSource(CFRunLoopGetCurrent(), runLoopSource, .commonModes)
