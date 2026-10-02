@@ -289,10 +289,41 @@ If Wispr Flow's PTT shortcut is bound to something other than `113+63`, rebind i
 `Fn+F15` in **Wispr Flow → Settings → Shortcuts**, or change `TRIGGER_KEY_CODE` in
 `dictation_listener.swift` to match.
 
-### Apps bound to a bare F15
+### Willow Voice
 
-If your dictation app's shortcut is a plain `F15` with no modifier, the `Fn` chord will
-not match it. Drop the modifier:
+Willow Voice works with the same default `Fn+F15` chord, with no configuration change.
+
+Its stored binding looks like it should not — a bare F15 with no modifiers, in
+`~/Library/Application Support/com.seewillow.WillowMac/Preferences/preferences.json`:
+
+```json
+"hotkeyData": { "keyName": "F15", "keyCode": 113, "modifiers": 0, "additionalModifiers": [] }
+```
+
+But Willow matches on the F15 keycode and ignores extra modifiers, so the chord Wispr
+requires reaches Willow too. Confirmed by clicking the headset with Willow running and
+reading back `Transcripts/`.
+
+(Willow's UI labels that preset "Fn", and a separate `hasMigratedAssistantHotkeyToFnCtrl`
+flag covers its *assistant* hotkey. Neither describes the dictation binding.)
+
+### Running both apps at once
+
+One chord drives whichever app is running:
+
+| Running | Gets the dictation |
+|---------|--------------------|
+| Wispr Flow only   | Wispr Flow |
+| Willow Voice only | Willow Voice |
+| both              | Willow Voice |
+
+When both are up, Willow consumes the F15 event and Wispr sees nothing. That is Willow's
+event-tap precedence, not a choice the daemon makes — quit Willow to hand the button back
+to Wispr.
+
+### Apps that require a bare F15
+
+For a dictation app that matches F15 strictly and rejects the `Fn` modifier, drop it:
 
 ```bash
 HEADSET_DICTATION_FN=0 make run
@@ -309,22 +340,8 @@ For the LaunchAgent, add an `EnvironmentVariables` dict to
 </dict>
 ```
 
-**Willow Voice needs this.** Its dictation hotkey, in
-`~/Library/Application Support/com.seewillow.WillowMac/Preferences/preferences.json`,
-is a bare F15 with no modifiers:
-
-```json
-"hotkeyData": { "keyName": "F15", "keyCode": 113, "modifiers": 0, "additionalModifiers": [] }
-```
-
-(Willow's UI labels that preset "Fn", and a separate `hasMigratedAssistantHotkeyToFnCtrl`
-flag covers its *assistant* hotkey — neither describes the dictation binding.)
-
-### Wispr Flow and Willow Voice at the same time
-
-You cannot drive both from one headset click with a single build. Wispr needs `Fn+F15`,
-Willow needs bare `F15`, and the daemon emits one chord. Pick one with
-`HEADSET_DICTATION_FN`, or rebind one of the apps so both want the same chord.
+Note this is not needed for Willow Voice, and it will break Wispr Flow, which cannot bind
+F15 without `Fn`.
 
 ### Stuck-key safety
 
