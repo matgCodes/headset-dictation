@@ -21,12 +21,62 @@ let USE_FN_MODIFIER = ProcessInfo.processInfo.environment["HEADSET_DICTATION_FN"
 /// cannot leave Fn and F15 virtually held down forever.
 let MAX_RECORDING_SECONDS: TimeInterval = 300
 
+/// Repeat presses closer together than this are switch bounce (~170 ms on the
+/// Sony IER-EX15C), not a second click.
+let DEBOUNCE_SECONDS: TimeInterval = 0.6
+
+/// Devices that are not seized (USB-C headsets such as the Sony IER-EX15C) deliver
+/// one click twice: first through the event tap, then again 0.6–1.3 s later as a
+/// Now Playing command. A Now Playing command this soon after a tap/HID press is
+/// that echo, so it is dropped instead of flipping the recording state back.
+let REMOTE_COMMAND_ECHO_SECONDS: TimeInterval = 2.0
+
+enum ClickSource: String {
+    case hid = "IOHIDManager"
+    case eventTap = "CGEventTap"
+    case remoteToggle = "MPRemoteCommandCenter.toggle"
+    case remotePlay = "MPRemoteCommandCenter.play"
+    case remotePause = "MPRemoteCommandCenter.pause"
+
+    var isRemoteCommand: Bool {
+        self == .remoteToggle || self == .remotePlay || self == .remotePause
+    }
+}
+
+/// Decides whether a reported press is a new click. Kept free of side effects so
+/// a recorded log can be replayed against it.
+struct ClickFilter {
+    private var lastAcceptedTime = Date.distantPast
+    private var lastDirectPressTime = Date.distantPast
+
+    enum Verdict: Equatable {
+        case accept
+        case debounced
+        case remoteEcho
+    }
+
+    mutating func evaluate(_ source: ClickSource, at now: Date) -> Verdict {
+        if source.isRemoteCommand {
+            if now.timeIntervalSince(lastDirectPressTime) < REMOTE_COMMAND_ECHO_SECONDS {
+                return .remoteEcho
+            }
+        } else {
+            lastDirectPressTime = now
+        }
+        if now.timeIntervalSince(lastAcceptedTime) < DEBOUNCE_SECONDS {
+            return .debounced
+        }
+        lastAcceptedTime = now
+        return .accept
+    }
+}
+
 @MainActor
 class DictationController {
     static let shared = DictationController()
 
     private var isRecording = false
-    private var lastToggleTime = Date.distantPast
+    private var clickFilter = ClickFilter()
     private var watchdog: Task<Void, Never>?
 
     private init() {}
@@ -40,19 +90,24 @@ class DictationController {
         sendTriggerState(down: false)
     }
 
-    func toggleDictation(source: String) {
+    func toggleDictation(source: ClickSource) {
         let now = Date()
-        let elapsed = now.timeIntervalSince(lastToggleTime)
-        print("[\(now)] Triggered by: \(source) (Elapsed: \(String(format: "%.3f", elapsed))s)")
+        print("[\(now)] Triggered by: \(source.rawValue)")
         fflush(stdout)
-        
-        if elapsed < 0.6 {
+
+        switch clickFilter.evaluate(source, at: now) {
+        case .accept:
+            break
+        case .debounced:
             print("  -> Dropped (Debounced)")
             fflush(stdout)
             return
+        case .remoteEcho:
+            print("  -> Dropped (Now Playing echo of a tap/HID press)")
+            fflush(stdout)
+            return
         }
-        lastToggleTime = now
-        
+
         isRecording.toggle()
         let chord = USE_FN_MODIFIER ? "Fn+F15" : "F15"
         if isRecording {
@@ -149,17 +204,17 @@ class RemoteCommandAdapter {
         let commandCenter = MPRemoteCommandCenter.shared()
         commandCenter.togglePlayPauseCommand.isEnabled = true
         commandCenter.togglePlayPauseCommand.addTarget { _ in
-            Task { @MainActor in DictationController.shared.toggleDictation(source: "MPRemoteCommandCenter.toggle") }
+            Task { @MainActor in DictationController.shared.toggleDictation(source: .remoteToggle) }
             return .success
         }
         commandCenter.playCommand.isEnabled = true
         commandCenter.playCommand.addTarget { _ in
-            Task { @MainActor in DictationController.shared.toggleDictation(source: "MPRemoteCommandCenter.play") }
+            Task { @MainActor in DictationController.shared.toggleDictation(source: .remotePlay) }
             return .success
         }
         commandCenter.pauseCommand.isEnabled = true
         commandCenter.pauseCommand.addTarget { _ in
-            Task { @MainActor in DictationController.shared.toggleDictation(source: "MPRemoteCommandCenter.pause") }
+            Task { @MainActor in DictationController.shared.toggleDictation(source: .remotePause) }
             return .success
         }
     }
@@ -176,7 +231,7 @@ class HIDListenerAdapter {
         let hidCallback: IOHIDValueCallback = { context, result, sender, value in
             let element = IOHIDValueGetElement(value)
             if IOHIDElementGetUsagePage(element) == 12 && IOHIDValueGetIntegerValue(value) == 1 {
-                Task { @MainActor in DictationController.shared.toggleDictation(source: "IOHIDManager") }
+                Task { @MainActor in DictationController.shared.toggleDictation(source: .hid) }
             }
         }
         IOHIDManagerRegisterInputValueCallback(manager, hidCallback, nil)
@@ -198,7 +253,7 @@ let eventTapCallback: CGEventTapCallBack = { proxy, type, event, refcon in
         let keyFlags = (data1 & 0x0000FF00) >> 8
         if keyCode == NX_KEYTYPE_PLAY {
             if keyFlags == 0x0A {
-                Task { @MainActor in DictationController.shared.toggleDictation(source: "CGEventTap") }
+                Task { @MainActor in DictationController.shared.toggleDictation(source: .eventTap) }
             }
             return nil
         }

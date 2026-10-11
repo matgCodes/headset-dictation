@@ -20,6 +20,7 @@ This daemon intercepts the inline button on standard 3.5mm TRRS headsets (Apple 
   - [Accessibility Permissions](#accessibility-permissions)
 - [Running as a Background Service](#running-as-a-background-service)
 - [Dictation App Compatibility](#dictation-app-compatibility)
+- [USB-C Headsets](#usb-c-headsets)
 - [License](#license)
 
 ---
@@ -201,7 +202,8 @@ Includes:
 1. The daemon initializes an `IOHIDManager` targeting devices matching `Transport: Audio` and `Product: Headset`.
 2. It opens the port in exclusive seize mode (`kIOHIDOptionsTypeSeizeDevice`), causing macOS to route 3.5mm button interrupts solely to the daemon while halting broadcast to the rest of the OS.
 3. When the physical button is pressed:
-   - It debounces events within 300ms to eliminate hardware switch bounce.
+   - It drops repeat presses within 600ms to eliminate hardware switch bounce.
+   - It drops a Now Playing command that arrives within 2s of a tap/HID press (see [USB-C Headsets](#usb-c-headsets)).
    - It toggles the internal recording state.
    - It injects a virtual `Fn+F15` chord (`keyCode: 63` + `113`) to start or stop speech-to-text dictation in Wispr Flow / Willow Voice.
    - Chrome, Spotify, Apple Music, and YouTube receive zero packets and never pause.
@@ -350,6 +352,24 @@ Because the chord is held between clicks, the daemon guards against it being lef
 - A watchdog releases the chord after `MAX_RECORDING_SECONDS` (default 300) if a second
   click never arrives.
 - `SIGINT` / `SIGTERM` release the chord before the process exits.
+
+---
+
+## USB-C Headsets
+
+USB-C headsets such as the Sony IER-EX15C show up as a USB HID device
+(`Transport: USB`, `Product: IER-EX15C`), not the `Audio` / `Headset` device the daemon
+seizes. Their button is not seized, so macOS delivers each click twice:
+
+1. `CGEventTap` sees the `NX_KEYTYPE_PLAY` press immediately.
+2. `MPRemoteCommandCenter` receives a toggle/play/pause command 0.6–1.3 s later.
+
+With only a time-based debounce, the second delivery flipped recording straight back
+(start → stop, or stop → start). The daemon now treats any Now Playing command within
+`REMOTE_COMMAND_ECHO_SECONDS` (2 s) of a tap/HID press as that press's echo and drops it.
+A Now Playing command with no recent tap/HID press still toggles normally.
+
+The log marks these as `Dropped (Now Playing echo of a tap/HID press)`.
 
 ---
 
