@@ -13,6 +13,11 @@
     <true/>
     <key>KeepAlive</key>
     <true/>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HEADSET_DICTATION_PROFILE</key>
+        <string>superwhisper</string>
+    </dict>
     <key>StandardOutPath</key>
     <string>/tmp/headset_dictation.log</string>
     <key>StandardErrorPath</key>
