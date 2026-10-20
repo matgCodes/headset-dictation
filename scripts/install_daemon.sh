@@ -7,7 +7,11 @@ PLIST_NAME="com.user.headsetdictation.plist"
 TARGET_DIR="${HOME}/Library/LaunchAgents"
 TARGET_PLIST="${TARGET_DIR}/${PLIST_NAME}"
 
-"${SCRIPT_DIR}/build.sh"
+if [[ "${HEADSET_DICTATION_SKIP_BUILD:-0}" != "1" ]]; then
+    "${SCRIPT_DIR}/build.sh"
+else
+    echo "==> Using the existing signed app bundle (build skipped)."
+fi
 
 mkdir -p "${TARGET_DIR}"
 

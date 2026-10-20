@@ -6,6 +6,7 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 echo "==> Compiling headset_dictation (Swift with optimizations)..."
 mkdir -p "${ROOT_DIR}/HeadsetDictation.app/Contents/MacOS"
+mkdir -p "${ROOT_DIR}/.build/module-cache"
 
 cat << 'EOF' > "${ROOT_DIR}/HeadsetDictation.app/Contents/Info.plist"
 <?xml version="1.0" encoding="UTF-8"?>
@@ -28,6 +29,8 @@ cat << 'EOF' > "${ROOT_DIR}/HeadsetDictation.app/Contents/Info.plist"
 </plist>
 EOF
 
+CLANG_MODULE_CACHE_PATH="${ROOT_DIR}/.build/module-cache" \
+SWIFT_MODULE_CACHE_PATH="${ROOT_DIR}/.build/module-cache" \
 swiftc -O -o "${ROOT_DIR}/HeadsetDictation.app/Contents/MacOS/headset_dictation" "${ROOT_DIR}/dictation_listener.swift"
 cp "${ROOT_DIR}/HeadsetDictation.app/Contents/MacOS/headset_dictation" "${ROOT_DIR}/headset_dictation"
 codesign --force --deep -s - "${ROOT_DIR}/HeadsetDictation.app"

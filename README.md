@@ -257,6 +257,30 @@ The service plist is placed at `~/Library/LaunchAgents/com.user.headsetdictation
 
 ## Dictation App Compatibility
 
+### Superwhisper
+
+This checkout includes a `superwhisper` trigger profile for keyboards without
+an F15 key. Set Superwhisper's recording shortcut to **Control+Option+Command+D**
+and select its push-to-talk / hold-to-record behavior. Enable the profile in
+`launchd/com.user.headsetdictation.plist` through:
+
+```xml
+<key>EnvironmentVariables</key>
+<dict>
+    <key>HEADSET_DICTATION_PROFILE</key>
+    <string>superwhisper</string>
+</dict>
+```
+
+For a foreground test, run:
+
+```bash
+HEADSET_DICTATION_PROFILE=superwhisper make run
+```
+
+The first headset click holds the chord; the second releases it. Superwhisper
+and `HeadsetDictation.app` each need their own Accessibility grant.
+
 ### Wispr Flow (default)
 
 Wispr Flow stores its hotkeys in `~/Library/Application Support/Wispr Flow/config.json`
@@ -308,6 +332,10 @@ reading back `Transcripts/`.
 
 (Willow's UI labels that preset "Fn", and a separate `hasMigratedAssistantHotkeyToFnCtrl`
 flag covers its *assistant* hotkey. Neither describes the dictation binding.)
+
+**If clicks log but Willow does nothing** (often right after a Willow update): quit and
+reopen Willow. If that fails, remove and re-add it under **Privacy & Security →
+Accessibility**.
 
 ### Running both apps at once
 

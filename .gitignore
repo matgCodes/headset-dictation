@@ -4,6 +4,7 @@ headset_dictation
 *.o
 *.dSYM/
 build/
+.build/
 bin/
 
 # macOS system files

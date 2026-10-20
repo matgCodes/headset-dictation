@@ -5,7 +5,12 @@ import AVFoundation
 import IOKit
 import IOKit.hid
 
-let TRIGGER_KEY_CODE: CGKeyCode = 113
+/// The upstream profile targets Wispr Flow / Willow with Fn+F15. This local
+/// installation also supports a `superwhisper` profile using a standard macOS
+/// chord (Control+Option+Command+D) that can be entered on keyboards without
+/// F15 (such as the Logitech Alto Keys K98M) and registered directly in Superwhisper.
+let SUPERWHISPER_PROFILE = ProcessInfo.processInfo.environment["HEADSET_DICTATION_PROFILE"] == "superwhisper"
+let TRIGGER_KEY_CODE: CGKeyCode = SUPERWHISPER_PROFILE ? 2 : 113 // D or F15
 let FN_KEY_CODE: CGKeyCode = 63
 
 /// Wispr Flow registers push-to-talk as the two-keycode chord [113, 63] (F15 + Fn)
@@ -15,7 +20,11 @@ let FN_KEY_CODE: CGKeyCode = 63
 ///
 /// Dictation apps bound to a bare F15, with no modifier, want this off:
 ///   HEADSET_DICTATION_FN=0
-let USE_FN_MODIFIER = ProcessInfo.processInfo.environment["HEADSET_DICTATION_FN"] != "0"
+let USE_FN_MODIFIER = !SUPERWHISPER_PROFILE && ProcessInfo.processInfo.environment["HEADSET_DICTATION_FN"] != "0"
+let TRIGGER_FLAGS: CGEventFlags = SUPERWHISPER_PROFILE
+    ? [.maskControl, .maskAlternate, .maskCommand]
+    : (USE_FN_MODIFIER ? .maskSecondaryFn : [])
+let TRIGGER_NAME = SUPERWHISPER_PROFILE ? "Control+Option+Command+D" : (USE_FN_MODIFIER ? "Fn+F15" : "F15")
 
 /// Release the chord unconditionally after this long, so a missed second click
 /// cannot leave Fn and F15 virtually held down forever.
@@ -26,9 +35,10 @@ let MAX_RECORDING_SECONDS: TimeInterval = 300
 let DEBOUNCE_SECONDS: TimeInterval = 0.6
 
 /// Devices that are not seized (USB-C headsets such as the Sony IER-EX15C) deliver
-/// one click twice: first through the event tap, then again 0.6–1.3 s later as a
-/// Now Playing command. A Now Playing command this soon after a tap/HID press is
-/// that echo, so it is dropped instead of flipping the recording state back.
+/// one click through multiple macOS media pipelines (e.g., CGEventTap then
+/// MPRemoteCommandCenter 0.6–1.3 s later, or CGEventTap and IOHIDManager). Any
+/// cross-source delivery or Now Playing command this soon after an initial press
+/// is dropped instead of flipping the recording state back.
 let REMOTE_COMMAND_ECHO_SECONDS: TimeInterval = 2.0
 
 enum ClickSource: String {
@@ -47,12 +57,18 @@ enum ClickSource: String {
 /// a recorded log can be replayed against it.
 struct ClickFilter {
     private var lastAcceptedTime = Date.distantPast
+    private var lastAcceptedSource: ClickSource?
     private var lastDirectPressTime = Date.distantPast
 
     enum Verdict: Equatable {
         case accept
         case debounced
         case remoteEcho
+        case crossSourceDuplicate
+    }
+
+    func elapsedSinceLastAccepted(at now: Date) -> TimeInterval {
+        now.timeIntervalSince(lastAcceptedTime)
     }
 
     mutating func evaluate(_ source: ClickSource, at now: Date) -> Verdict {
@@ -63,10 +79,16 @@ struct ClickFilter {
         } else {
             lastDirectPressTime = now
         }
+        if let lastSource = lastAcceptedSource,
+           lastSource != source,
+           now.timeIntervalSince(lastAcceptedTime) < REMOTE_COMMAND_ECHO_SECONDS {
+            return .crossSourceDuplicate
+        }
         if now.timeIntervalSince(lastAcceptedTime) < DEBOUNCE_SECONDS {
             return .debounced
         }
         lastAcceptedTime = now
+        lastAcceptedSource = source
         return .accept
     }
 }
@@ -92,7 +114,8 @@ class DictationController {
 
     func toggleDictation(source: ClickSource) {
         let now = Date()
-        print("[\(now)] Triggered by: \(source.rawValue)")
+        let elapsed = clickFilter.elapsedSinceLastAccepted(at: now)
+        print("[\(now)] Triggered by: \(source.rawValue) (Elapsed: \(String(format: "%.3f", elapsed))s)")
         fflush(stdout)
 
         switch clickFilter.evaluate(source, at: now) {
@@ -106,10 +129,14 @@ class DictationController {
             print("  -> Dropped (Now Playing echo of a tap/HID press)")
             fflush(stdout)
             return
+        case .crossSourceDuplicate:
+            print("  -> Dropped (Cross-source duplicate)")
+            fflush(stdout)
+            return
         }
 
         isRecording.toggle()
-        let chord = USE_FN_MODIFIER ? "Fn+F15" : "F15"
+        let chord = TRIGGER_NAME
         if isRecording {
             print("[\(now)] 🎙️ Headset Clicked -> RECORDING STARTED (\(chord) Down)")
             fflush(stdout)
@@ -140,7 +167,7 @@ class DictationController {
     /// trails on release, so both keys are down for the entire dictation.
     private func sendTriggerState(down: Bool) {
         guard let src = CGEventSource(stateID: .hidSystemState) else { return }
-        let flags: CGEventFlags = USE_FN_MODIFIER ? .maskSecondaryFn : []
+        let flags = TRIGGER_FLAGS
 
         if down && USE_FN_MODIFIER {
             postFlagsChanged(src, keyCode: FN_KEY_CODE, flags: .maskSecondaryFn)
